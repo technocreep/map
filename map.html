@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>St. Petersburg Art Map | Smooth Native Overlay</title>
+    
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Permanent+Marker&family=Roboto+Condensed:wght@700&display=swap');
+
+        :root {
+            --accent-yellow: #ffdf00;
+            --accent-pink: #ff007f;
+            --accent-blue: #00f3ff;
+            --street-black: #1a1a1b;
+        }
+
+        body, html {
+            margin: 0; padding: 0; height: 100%;
+            font-family: 'Roboto Condensed', sans-serif;
+            background-color: #000;
+            overflow: hidden;
+            touch-action: manipulation;
+        }
+
+        #map { height: 100vh; width: 100%; z-index: 1; }
+
+        /* Делаем фон карты черным, чтобы при подгрузке тайлов не было вспышек */
+        .leaflet-container { background: #000 !important; }
+
+        .header {
+            position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+            z-index: 1000; background: var(--street-black); padding: 5px 15px;
+            border: 3px solid var(--accent-yellow); box-shadow: 5px 5px 0px rgba(0,0,0,0.5);
+            pointer-events: none; text-align: center; width: auto; max-width: 90%;
+        }
+
+        .header h1 {
+            margin: 0; font-family: 'Permanent Marker', cursive;
+            color: var(--accent-yellow); font-size: 1.2rem;
+            text-shadow: 2px 2px #ff007f;
+        }
+
+        .controls {
+            position: absolute; bottom: 20px; left: 0; right: 0;
+            z-index: 1000; display: flex; flex-direction: column; 
+            align-items: center; gap: 10px; padding: 0 10px;
+        }
+
+        .btn-tag {
+            color: white; border: 3px solid white; padding: 12px 25px;
+            font-size: 16px; font-family: 'Permanent Marker', cursive;
+            cursor: pointer; box-shadow: 4px 4px 0px #000;
+            background: var(--accent-pink);
+            pointer-events: auto;
+        }
+
+        .btn-tag.active { background: #00ff00; color: black; }
+
+        .spray-icon svg {
+            width: 32px; height: 32px;
+            filter: drop-shadow(0px 0px 8px var(--accent-pink));
+        }
+
+        /* Настройки для нашего нативного SVG слоя */
+        .insight-svg-layer {
+            pointer-events: none !important;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <h1>SPB STREET ART + ✨</h1>
+    </div>
+
+    <div class="controls">
+        <div id="helper" style="background:white; padding:5px; border:2px solid black; display:none; margin-bottom:5px; font-size:12px;">КЛИКНИ НА КАРТУ</div>
+        <button id="addModeBtn" class="btn-tag">ТЕГНУТЬ</button>
+    </div>
+
+    <div id="map"></div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <script>
+        // Инициализация карты с отключенным инерционным зумом для более четкой синхронизации
+        const map = L.map('map', { 
+            zoomControl: false, 
+            tap: true,
+            zoomAnimation: true,
+            fadeAnimation: true
+        }).setView([59.9386, 30.3141], 14);
+
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+
+        const savedPoints = [];
+        const spotlightRadiusMeters = 200;
+
+        const sprayIcon = L.divIcon({
+            className: 'spray-icon',
+            html: `<svg viewBox="0 0 512 512" fill="#ff007f">
+                    <path d="M192 128h128v32H192zm144 64V160H176v32h-16v256c0 35.3 28.7 64 64 64h176c35.3 0 64-28.7 64-64V192h-16zm-32 256H208V224h96z"/>
+                    <circle cx="256" cy="64" r="32"/>
+                   </svg>`,
+            iconSize: [32, 32],
+            iconAnchor: [16, 32]
+        });
+
+        // Создаем нативный SVG рендерер Leaflet
+        const svgRenderer = L.svg({ padding: 0.5 });
+        svgRenderer.addTo(map);
+        const svgElement = svgRenderer._container;
+        svgElement.classList.add('insight-svg-layer');
+
+        // Создаем структуру маски внутри нативного SVG
+        const defs = L.SVG.create('defs');
+        const mask = L.SVG.create('mask');
+        mask.setAttribute('id', 'native-insight-mask');
+        
+        const maskBg = L.SVG.create('rect');
+        maskBg.setAttribute('width', '100000%'); // Огромный запас
+        maskBg.setAttribute('height', '100000%');
+        maskBg.setAttribute('x', '-50000%');
+        maskBg.setAttribute('y', '-50000%');
+        maskBg.setAttribute('fill', 'white');
+        
+        const holesGroup = L.SVG.create('g');
+        holesGroup.setAttribute('id', 'native-mask-holes');
+
+        mask.appendChild(maskBg);
+        mask.appendChild(holesGroup);
+        defs.appendChild(mask);
+        svgElement.appendChild(defs);
+
+        // Основной прямоугольник "вуали"
+        const overlayRect = L.SVG.create('rect');
+        overlayRect.setAttribute('width', '100000%');
+        overlayRect.setAttribute('height', '100000%');
+        overlayRect.setAttribute('x', '-50000%');
+        overlayRect.setAttribute('y', '-50000%');
+        // Изменили прозрачность: было 0.92, стало 0.69 (светлее на ~25%)
+        overlayRect.setAttribute('fill', 'rgba(10, 10, 10, 0.69)');
+        overlayRect.setAttribute('mask', 'url(#native-insight-mask)');
+        overlayRect.setAttribute('style', 'filter: contrast(1.1);');
+        svgElement.appendChild(overlayRect);
+
+        function updateHoles() {
+            holesGroup.innerHTML = '';
+            savedPoints.forEach(p => {
+                const latlng = L.latLng(p.lat, p.lng);
+                const pos = map.latLngToLayerPoint(latlng);
+                
+                // Считаем радиус в пикселях слоя (layer pixels)
+                const point2 = L.latLng(p.lat, p.lng).toBounds(spotlightRadiusMeters).getNorthEast();
+                const pos2 = map.latLngToLayerPoint(point2);
+                const radius = Math.sqrt(Math.pow(pos2.x - pos.x, 2) + Math.pow(pos2.y - pos.y, 2));
+
+                const circle = L.SVG.create('circle');
+                circle.setAttribute('cx', pos.x);
+                circle.setAttribute('cy', pos.y);
+                circle.setAttribute('r', radius);
+                circle.setAttribute('fill', 'black');
+                circle.setAttribute('style', 'filter: blur(25px);');
+                holesGroup.appendChild(circle);
+            });
+        }
+
+        // Ключевой момент: обновляем только координаты при изменении вьюпорта
+        // Но Leaflet сам будет двигать контейнер svgElement через CSS Transform
+        map.on('viewreset zoom move', updateHoles);
+
+        const initialPoints = [
+            { lat: 59.9219, lng: 30.3555, name: "Лофт-проект Этажи" },
+            { lat: 59.9247, lng: 30.2415, name: "Севкабель Порт" },
+            { lat: 59.9398, lng: 30.3475, name: "Пушкинская 10" },
+            { lat: 59.9041, lng: 30.2974, name: "Бертгольд Центр" }
+        ];
+
+        function addPoint(p) {
+            const m = L.marker([p.lat, p.lng], { icon: sprayIcon }).addTo(map);
+            m.bindPopup(`<b>${p.name}</b>`);
+            savedPoints.push({ ...p, marker: m });
+            updateHoles();
+        }
+
+        initialPoints.forEach(addPoint);
+
+        // Интерфейс
+        const addBtn = document.getElementById('addModeBtn');
+        let isAddMode = false;
+
+        addBtn.onclick = () => {
+            isAddMode = !isAddMode;
+            addBtn.classList.toggle('active');
+            document.getElementById('helper').style.display = isAddMode ? 'block' : 'none';
+        };
+
+        map.on('click', (e) => {
+            if (!isAddMode) return;
+            const name = prompt("Название арта:");
+            if (name) addPoint({ lat: e.latlng.lat, lng: e.latlng.lng, name: name });
+            isAddMode = false;
+            addBtn.classList.remove('active');
+            document.getElementById('helper').style.display = 'none';
+        });
+
+        setTimeout(updateHoles, 200);
+    </script>
+</body>
+</html>
