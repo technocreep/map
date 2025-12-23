@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <title>St. Petersburg Art Map | Smooth Native Overlay</title>
+    <title>St. Petersburg Art Map | Mobile Optimized</title>
     
     <!-- Leaflet CSS -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
@@ -23,12 +23,11 @@
             font-family: 'Roboto Condensed', sans-serif;
             background-color: #000;
             overflow: hidden;
-            touch-action: manipulation;
+            touch-action: none;
         }
 
         #map { height: 100vh; width: 100%; z-index: 1; }
 
-        /* Делаем фон карты черным, чтобы при подгрузке тайлов не было вспышек */
         .leaflet-container { background: #000 !important; }
 
         .header {
@@ -56,25 +55,54 @@
             cursor: pointer; box-shadow: 4px 4px 0px #000;
             background: var(--accent-pink);
             pointer-events: auto;
+            -webkit-tap-highlight-color: transparent;
         }
 
         .btn-tag.active { background: #00ff00; color: black; }
+
+        /* Custom Modal for Mobile */
+        #custom-input {
+            display: none;
+            position: absolute; top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 2000; background: var(--street-black);
+            border: 4px solid var(--accent-yellow);
+            padding: 20px; box-shadow: 10px 10px 0px #000;
+            width: 280px;
+        }
+
+        #custom-input input {
+            width: 100%; padding: 10px; box-sizing: border-box;
+            background: #333; border: 2px solid white; color: white;
+            font-family: 'Roboto Condensed'; margin-bottom: 10px;
+        }
+
+        #custom-input button {
+            width: 100%; padding: 10px; background: var(--accent-pink);
+            color: white; border: none; font-family: 'Permanent Marker';
+            cursor: pointer;
+        }
 
         .spray-icon svg {
             width: 32px; height: 32px;
             filter: drop-shadow(0px 0px 8px var(--accent-pink));
         }
 
-        /* Настройки для нашего нативного SVG слоя */
-        .insight-svg-layer {
-            pointer-events: none !important;
-        }
+        .insight-svg-layer { pointer-events: none !important; }
     </style>
 </head>
 <body>
 
     <div class="header">
         <h1>SPB STREET ART + ✨</h1>
+    </div>
+
+    <!-- Кастомное окно ввода для мобилок -->
+    <div id="custom-input">
+        <h2 style="color:var(--accent-yellow); margin-top:0; font-family:'Permanent Marker';">НОВЫЙ ТЕГ</h2>
+        <input type="text" id="tag-name" placeholder="Название арта..." autocomplete="off">
+        <button id="save-tag">СОХРАНИТЬ</button>
+        <button id="cancel-tag" style="background:#555; margin-top:5px;">ОТМЕНА</button>
     </div>
 
     <div class="controls">
@@ -87,18 +115,21 @@
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
     <script>
-        // Инициализация карты с отключенным инерционным зумом для более четкой синхронизации
+        // Использование preferCanvas для мобильной производительности
         const map = L.map('map', { 
             zoomControl: false, 
             tap: true,
             zoomAnimation: true,
-            fadeAnimation: true
+            fadeAnimation: true,
+            preferCanvas: true,
+            bounceAtZoomLimits: false
         }).setView([59.9386, 30.3141], 14);
 
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
 
-        const savedPoints = [];
+        let savedPoints = [];
         const spotlightRadiusMeters = 200;
+        let lastClickLatLng = null;
 
         const sprayIcon = L.divIcon({
             className: 'spray-icon',
@@ -110,19 +141,18 @@
             iconAnchor: [16, 32]
         });
 
-        // Создаем нативный SVG рендерер Leaflet
+        // SVG Оверлей
         const svgRenderer = L.svg({ padding: 0.5 });
         svgRenderer.addTo(map);
         const svgElement = svgRenderer._container;
         svgElement.classList.add('insight-svg-layer');
 
-        // Создаем структуру маски внутри нативного SVG
         const defs = L.SVG.create('defs');
         const mask = L.SVG.create('mask');
         mask.setAttribute('id', 'native-insight-mask');
         
         const maskBg = L.SVG.create('rect');
-        maskBg.setAttribute('width', '100000%'); // Огромный запас
+        maskBg.setAttribute('width', '100000%');
         maskBg.setAttribute('height', '100000%');
         maskBg.setAttribute('x', '-50000%');
         maskBg.setAttribute('y', '-50000%');
@@ -136,13 +166,11 @@
         defs.appendChild(mask);
         svgElement.appendChild(defs);
 
-        // Основной прямоугольник "вуали"
         const overlayRect = L.SVG.create('rect');
         overlayRect.setAttribute('width', '100000%');
         overlayRect.setAttribute('height', '100000%');
         overlayRect.setAttribute('x', '-50000%');
         overlayRect.setAttribute('y', '-50000%');
-        // Изменили прозрачность: было 0.92, стало 0.69 (светлее на ~25%)
         overlayRect.setAttribute('fill', 'rgba(10, 10, 10, 0.69)');
         overlayRect.setAttribute('mask', 'url(#native-insight-mask)');
         overlayRect.setAttribute('style', 'filter: contrast(1.1);');
@@ -153,8 +181,6 @@
             savedPoints.forEach(p => {
                 const latlng = L.latLng(p.lat, p.lng);
                 const pos = map.latLngToLayerPoint(latlng);
-                
-                // Считаем радиус в пикселях слоя (layer pixels)
                 const point2 = L.latLng(p.lat, p.lng).toBounds(spotlightRadiusMeters).getNorthEast();
                 const pos2 = map.latLngToLayerPoint(point2);
                 const radius = Math.sqrt(Math.pow(pos2.x - pos.x, 2) + Math.pow(pos2.y - pos.y, 2));
@@ -169,16 +195,31 @@
             });
         }
 
-        // Ключевой момент: обновляем только координаты при изменении вьюпорта
-        // Но Leaflet сам будет двигать контейнер svgElement через CSS Transform
         map.on('viewreset zoom move', updateHoles);
 
-        const initialPoints = [
-            { lat: 59.9219, lng: 30.3555, name: "Лофт-проект Этажи" },
-            { lat: 59.9247, lng: 30.2415, name: "Севкабель Порт" },
-            { lat: 59.9398, lng: 30.3475, name: "Пушкинская 10" },
-            { lat: 59.9041, lng: 30.2974, name: "Бертгольд Центр" }
-        ];
+        // Функция сохранения в LocalStorage
+        function saveData() {
+            const dataToSave = savedPoints.map(p => ({ lat: p.lat, lng: p.lng, name: p.name }));
+            localStorage.setItem('spb_art_tags', JSON.stringify(dataToSave));
+        }
+
+        // Загрузка данных
+        function loadData() {
+            const stored = localStorage.getItem('spb_art_tags');
+            if (stored) {
+                const points = JSON.parse(stored);
+                points.forEach(addPoint);
+            } else {
+                // Дефолтные точки, если памяти нет
+                const initialPoints = [
+                    { lat: 59.9219, lng: 30.3555, name: "Лофт-проект Этажи" },
+                    { lat: 59.9247, lng: 30.2415, name: "Севкабель Порт" },
+                    { lat: 59.9398, lng: 30.3475, name: "Пушкинская 10" },
+                    { lat: 59.9041, lng: 30.2974, name: "Бертгольд Центр" }
+                ];
+                initialPoints.forEach(addPoint);
+            }
+        }
 
         function addPoint(p) {
             const m = L.marker([p.lat, p.lng], { icon: sprayIcon }).addTo(map);
@@ -187,9 +228,11 @@
             updateHoles();
         }
 
-        initialPoints.forEach(addPoint);
-
-        // Интерфейс
+        // Логика кастомного модального окна
+        const modal = document.getElementById('custom-input');
+        const inputField = document.getElementById('tag-name');
+        const saveBtn = document.getElementById('save-tag');
+        const cancelBtn = document.getElementById('cancel-tag');
         const addBtn = document.getElementById('addModeBtn');
         let isAddMode = false;
 
@@ -201,14 +244,33 @@
 
         map.on('click', (e) => {
             if (!isAddMode) return;
-            const name = prompt("Название арта:");
-            if (name) addPoint({ lat: e.latlng.lat, lng: e.latlng.lng, name: name });
+            lastClickLatLng = e.latlng;
+            modal.style.display = 'block';
+            inputField.focus();
+        });
+
+        saveBtn.onclick = () => {
+            const name = inputField.value.trim();
+            if (name && lastClickLatLng) {
+                addPoint({ lat: lastClickLatLng.lat, lng: lastClickLatLng.lng, name: name });
+                saveData();
+            }
+            closeModal();
+        };
+
+        cancelBtn.onclick = closeModal;
+
+        function closeModal() {
+            modal.style.display = 'none';
+            inputField.value = '';
             isAddMode = false;
             addBtn.classList.remove('active');
             document.getElementById('helper').style.display = 'none';
-        });
+        }
 
-        setTimeout(updateHoles, 200);
+        // Инициализация
+        loadData();
+        setTimeout(updateHoles, 500);
     </script>
 </body>
 </html>
